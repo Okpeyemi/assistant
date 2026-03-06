@@ -1,0 +1,45 @@
+name: Deploy to Server
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    name: Deploy via SSH
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          password: ${{ secrets.SERVER_PASSWORD }}
+          port: ${{ secrets.SERVER_PORT }}
+          envs: GITHUB_TOKEN_DEPLOY
+          script: |
+            set -e
+            cd /opt/assistant
+
+            echo "==> Git pull..."
+            # Reconfigure l'URL avec token si dépôt privé (GITHUB_TOKEN_DEPLOY optionnel)
+            if [ -n "$GITHUB_TOKEN_DEPLOY" ]; then
+              git remote set-url origin "https://${GITHUB_TOKEN_DEPLOY}@github.com/asrDIL/assistant.git"
+            fi
+            git pull origin main
+
+            echo "==> Rebuild et redéploiement Docker..."
+            docker compose up --build -d
+
+            echo "==> Nettoyage images inutilisées..."
+            docker image prune -f
+
+            echo "==> Déploiement terminé !"
+            docker compose ps
+        env:
+          GITHUB_TOKEN_DEPLOY: ${{ secrets.GITHUB_TOKEN_DEPLOY }}
