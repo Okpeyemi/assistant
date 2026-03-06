@@ -162,8 +162,6 @@ class BrowserManager:
             return {}
 
     async def click_by_text(self, text: str) -> bool:
-        url_before = self.page.url
-
         # 0. If text matches an <a> with href, navigate directly (Angular SPA fix)
         try:
             href = await self.page.evaluate(
@@ -177,43 +175,25 @@ class BrowserManager:
             if href:
                 await self.page.goto(href, wait_until='domcontentloaded', timeout=15000)
                 await asyncio.sleep(1.5)
-                print(f"click_by_text: navigated to href {href!r} for text {text!r} (Angular SPA)")
+                print(f"click_by_text: navigated to {href!r} for text {text!r} (Angular SPA)")
                 return True
         except Exception:
             pass
 
-        # 1. Clic normal
+        # 1. Normal Playwright click (for non-link clickable elements)
         try:
             await self.page.get_by_text(text, exact=False).first.click(timeout=5000)
-            await asyncio.sleep(1.2)
-            if self.page.url != url_before:
-                return True
+            await asyncio.sleep(1.0)
+            return True
         except Exception:
             pass
-        # 2. Force click (bypasse la vérification de visibilité)
+        # 2. Force click
         try:
             await self.page.get_by_text(text, exact=False).first.click(
                 force=True, timeout=3000
             )
-            await asyncio.sleep(1.2)
-            if self.page.url != url_before:
-                return True
-        except Exception:
-            pass
-        # 3. JavaScript click via goto (pour les liens Angular)
-        try:
-            navigated = await self.page.evaluate(
-                """([txt]) => {
-                    const links = Array.from(document.querySelectorAll('a'));
-                    const link = links.find(a => a.textContent.trim().includes(txt));
-                    if (link && link.href) { window.location.href = link.href; return true; }
-                    return false;
-                }""",
-                [text],
-            )
-            if navigated:
-                await asyncio.sleep(2.0)
-                return True
+            await asyncio.sleep(1.0)
+            return True
         except Exception:
             pass
         # 4. JavaScript click direct sur bouton/clickable (Angular, Material, etc.)
