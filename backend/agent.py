@@ -201,7 +201,7 @@ class NavigationAgent:
     async def process_audio_message(self, audio_data: str, mime_type: str):
         """Transcrit un message audio fongbe et le traduit en français via Gemini."""
         await self.send_status("thinking")
-        await self._send({"type": "log", "action": "fill", "text": "🎤 Transcription audio fongbe en cours..."})
+        await self._send({"type": "log", "action": "fill", "text": "🎤 Transcription audio en cours..."})
 
         try:
             audio_bytes = base64.b64decode(audio_data)
@@ -218,16 +218,41 @@ class NavigationAgent:
             print(f"[Audio] mime reçu: {mime_type!r} → utilisé: {clean_mime!r}, taille: {len(audio_bytes)} octets")
 
             prompt_text = (
-                "L'utilisateur parle en langue fongbe (langue parlée au Bénin, Afrique de l'Ouest). \n"
-                "Ta tâche :\n"
-                "1. Transcris exactement ce que l'utilisateur dit en fongbe.\n"
-                "2. Traduis sa demande en français clair et naturel.\n"
-                "Exemples de demandes courantes :\n"
-                "  fongbe → 'Je veux faire mon extrait de naissance'\n"
-                "  fongbe → 'Comment faire mon passeport ?'\n"
-                "  fongbe → 'Je veux faire ma carte d'identité'\n"
-                "Réponds UNIQUEMENT avec la traduction française, sans explication ni préfixe.\n"
-                "Si l'audio est inaudible ou incompréhensible, réponds exactement : AUDIO_INAUDIBLE"
+                "Tu es un expert en langue fongbe (fɔngbè), langue principale parlée au Bénin "
+                "et dans certaines régions du Togo et du Nigeria.\n\n"
+
+                "CONTEXTE DE L'APPLICATION :\n"
+                "Cette application aide les citoyens béninois à effectuer leurs démarches administratives "
+                "sur le site service-public.bj. Les demandes portent sur :\n"
+                "  - Extrait de naissance / acte de naissance (dokun tɔn / akɛ de nesɑ̃s)\n"
+                "  - Casier judiciaire (kasye jidisyɛ)\n"
+                "  - Carte nationale d'identité - CNI (kati nasyonal)\n"
+                "  - Passeport (passpot)\n"
+                "  - Permis de conduire (pɛmi de kɔ̃dɥiʁ)\n"
+                "  - Certificat de résidence (sɛtifika de rezidɑ̃s)\n"
+                "  - Acte de mariage (akɛ de mayaj)\n"
+                "  - Acte de décès (akɛ de dɛsɛ)\n"
+                "  - Légalisation de documents\n\n"
+
+                "TON RÔLE :\n"
+                "1. Écouter attentivement l'audio en fongbe.\n"
+                "2. Comprendre le sens général de ce que dit l'utilisateur, même si la prononciation "
+                "n'est pas parfaite ou si des mots français sont mélangés (code-switching fongbe/français courant au Bénin).\n"
+                "3. Traduire la demande en français clair et naturel.\n\n"
+
+                "RÈGLES STRICTES — NE JAMAIS VIOLER :\n"
+                "  ❌ Ne jamais inventer ou supposer ce que l'utilisateur veut dire si l'audio n'est pas clair.\n"
+                "  ❌ Ne jamais compléter ou deviner la fin d'une phrase inaudible.\n"
+                "  ❌ Ne jamais halluciner un contenu qui n'est pas présent dans l'audio.\n"
+                "  ✅ Si tu n'es pas sûr à plus de 85% du sens global : réponds AUDIO_INAUDIBLE.\n"
+                "  ✅ Si l'audio est trop court (moins de 1 seconde de parole utile) : réponds AUDIO_INAUDIBLE.\n"
+                "  ✅ Si l'audio est bruité, coupé, ou incompréhensible : réponds AUDIO_INAUDIBLE.\n\n"
+
+                "FORMAT DE RÉPONSE :\n"
+                "  - Si l'audio est compris : réponds UNIQUEMENT avec la traduction française, "
+                "sans guillemets, sans préfixe, sans explication.\n"
+                "    Exemple : Je veux faire mon casier judiciaire\n"
+                "  - Si l'audio est inaudible ou non compris : réponds UNIQUEMENT le mot : AUDIO_INAUDIBLE\n"
             )
 
             response = await asyncio.to_thread(
@@ -243,11 +268,30 @@ class NavigationAgent:
             print(f"[Audio] Gemini réponse: {french_text!r}")
 
             if not french_text or "AUDIO_INAUDIBLE" in french_text:
+                # Audio non compris → demander à l'utilisateur de réessayer ou d'écrire
+                retry_msg = (
+                    "Je n'ai pas bien compris votre message audio. "
+                    "Vous pouvez réessayer en parlant plus clairement et plus près du micro, "
+                    "ou saisir votre demande directement ci-dessous."
+                )
+                await self._send({"type": "message", "role": "assistant", "text": retry_msg})
+                # Proposer un champ de saisie pour écrire la demande
                 await self._send({
-                    "type": "message",
-                    "role": "assistant",
-                    "text": "Je n'ai pas pu comprendre l'audio. Veuillez réessayer ou taper votre demande en français.",
+                    "type": "ask_field",
+                    "field_id": "demande_textuelle",
+                    "label": "Quelle est votre demande ?",
+                    "hint": "Ex : Je veux faire mon casier judiciaire",
+                    "index": 1,
+                    "total": 1,
                 })
+                self._collecting_fields = True
+                self._current_field = {
+                    "id": "demande_textuelle",
+                    "label": "Quelle est votre demande ?",
+                    "hint": "Ex : Je veux faire mon casier judiciaire",
+                }
+                self._field_queue = []
+                self._field_total = 1
                 await self.send_status("idle")
                 return
 
@@ -393,9 +437,16 @@ class NavigationAgent:
             # Tous les champs collectés → reprendre la navigation
             self._collecting_fields = False
             answers_str = "\n".join(f"- {k}: {v}" for k, v in self._field_answers.items())
+            self._field_answers = {}
+
+            # Cas spécial : l'utilisateur a tapé sa demande après un audio incompris
+            # → traiter comme un premier message (déclenche la collecte de docs etc.)
+            if not self._user_goal and field_id == "demande_textuelle":
+                await self.process_message(value)
+                return
+
             context = f"Informations fournies par l'utilisateur :\n{answers_str}"
             self.history.append({"role": "user", "text": context})
-            self._field_answers = {}
             await self.send_status("thinking")
             await self._autonomous_loop(max_iterations=30)
 
