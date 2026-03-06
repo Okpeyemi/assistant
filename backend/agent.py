@@ -205,26 +205,42 @@ class NavigationAgent:
 
         try:
             audio_bytes = base64.b64decode(audio_data)
+
+            # Gemini n'accepte pas les paramètres de codec (ex: audio/webm;codecs=opus)
+            # → on garde uniquement le type de base
+            clean_mime = mime_type.split(";")[0].strip()
+            # Gemini supporte : audio/wav, audio/mp3, audio/ogg, audio/webm, audio/aac, audio/flac
+            # Si le navigateur envoie un format non supporté, on tente quand même avec audio/webm
+            if clean_mime not in ("audio/wav", "audio/mp3", "audio/ogg", "audio/webm",
+                                   "audio/aac", "audio/flac", "audio/mpeg"):
+                clean_mime = "audio/webm"
+
+            print(f"[Audio] mime reçu: {mime_type!r} → utilisé: {clean_mime!r}, taille: {len(audio_bytes)} octets")
+
+            prompt_text = (
+                "L'utilisateur parle en langue fongbe (langue parlée au Bénin, Afrique de l'Ouest). \n"
+                "Ta tâche :\n"
+                "1. Transcris exactement ce que l'utilisateur dit en fongbe.\n"
+                "2. Traduis sa demande en français clair et naturel.\n"
+                "Exemples de demandes courantes :\n"
+                "  fongbe → 'Je veux faire mon extrait de naissance'\n"
+                "  fongbe → 'Comment faire mon passeport ?'\n"
+                "  fongbe → 'Je veux faire ma carte d'identité'\n"
+                "Réponds UNIQUEMENT avec la traduction française, sans explication ni préfixe.\n"
+                "Si l'audio est inaudible ou incompréhensible, réponds exactement : AUDIO_INAUDIBLE"
+            )
+
             response = await asyncio.to_thread(
                 self.client.models.generate_content,
                 model="gemini-2.5-flash",
                 contents=[
-                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
-                    (
-                        "L'utilisateur parle en langue fongbe (langue parlée au Bénin, Afrique de l'Ouest). \n"
-                        "Ta tâche :\n"
-                        "1. Comprends ce que l'utilisateur dit en fongbe.\n"
-                        "2. Traduis sa demande en français clair et naturel.\n"
-                        "Exemples :\n"
-                        "  'Mi jɛ wà dokun mitɔn' → 'Je veux faire mon extrait de naissance'\n"
-                        "  'Ðò nɛ̌ e è nɔ wà dokun ɔ gbɔn é ?' → 'Comment faire mon extrait de naissance ?'\n"
-                        "  'Mi jɛ wà passpot mitɔn' → 'Je veux faire mon passeport'\n"
-                        "Réponds UNIQUEMENT avec la traduction française, sans explication ni préfixe.\n"
-                        "Si l'audio est inaudible ou incompréhensible, réponds exactement : AUDIO_INAUDIBLE"
-                    ),
+                    types.Part.from_bytes(data=audio_bytes, mime_type=clean_mime),
+                    types.Part.from_text(text=prompt_text),
                 ],
             )
+
             french_text = response.text.strip() if response.text else ""
+            print(f"[Audio] Gemini réponse: {french_text!r}")
 
             if not french_text or "AUDIO_INAUDIBLE" in french_text:
                 await self._send({
@@ -242,7 +258,8 @@ class NavigationAgent:
             await self.process_message(french_text)
 
         except Exception as e:
-            print(f"Erreur transcription audio fongbe: {e}")
+            import traceback
+            print(f"[Audio] Erreur transcription fongbe: {e}\n{traceback.format_exc()}")
             await self._send({
                 "type": "message",
                 "role": "assistant",
