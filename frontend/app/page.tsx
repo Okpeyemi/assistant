@@ -16,7 +16,7 @@ export default function Page() {
       <header className="flex items-center gap-2.5 px-4 py-2.5 border-b shrink-0">
         <GlobeIcon className="size-4 text-muted-foreground" />
         <span className="text-sm font-medium tracking-tight">
-          Assistant Démarches Bénin
+          Assistant Démarches Bénin Test
         </span>
         <Separator orientation="vertical" className="h-4 mx-1" />
         <span className="text-xs text-muted-foreground">service-public.bj</span>
