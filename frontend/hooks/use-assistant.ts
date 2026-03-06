@@ -58,6 +58,31 @@ export function useAssistant() {
   // field callback ref
   const answerFieldRef = useRef<(fieldId: string, value: string) => void>(() => {})
 
+  // ── Text-to-speech ───────────────────────────────────────────────────────
+  const speakFrench = useCallback((text: string) => {
+    if (!window.speechSynthesis) return
+    // Annule toute lecture en cours avant la nouvelle
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.lang = "fr-FR"
+    utterance.rate = 1.0
+    utterance.pitch = 1.0
+    // Choisit une voix française si disponible
+    const voices = window.speechSynthesis.getVoices()
+    const frVoice = voices.find((v) => v.lang.startsWith("fr"))
+    if (frVoice) utterance.voice = frVoice
+    window.speechSynthesis.speak(utterance)
+  }, [])
+
+  // Précharge les voix dès le montage (elles sont chargées de façon asynchrone)
+  useEffect(() => {
+    if (!window.speechSynthesis) return
+    window.speechSynthesis.getVoices()
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.speechSynthesis.getVoices()
+    }
+  }, [])
+
   useEffect(() => {
     const ws = new WebSocket("ws://localhost:8000/ws")
     wsRef.current = ws
@@ -85,6 +110,7 @@ export function useAssistant() {
           ])
           if (data.role === "assistant") {
             setIsThinking(false)
+            speakFrench(data.text)
           }
         } else if (data.type === "log") {
           setItems((prev) => [
