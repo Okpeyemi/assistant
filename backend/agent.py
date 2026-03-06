@@ -198,6 +198,58 @@ class NavigationAgent:
     # Entry points
     # ──────────────────────────────────────────────
 
+    async def process_audio_message(self, audio_data: str, mime_type: str):
+        """Transcrit un message audio fongbe et le traduit en français via Gemini."""
+        await self.send_status("thinking")
+        await self._send({"type": "log", "action": "fill", "text": "🎤 Transcription audio fongbe en cours..."})
+
+        try:
+            audio_bytes = base64.b64decode(audio_data)
+            response = await asyncio.to_thread(
+                self.client.models.generate_content,
+                model="gemini-2.5-flash",
+                contents=[
+                    types.Part.from_bytes(data=audio_bytes, mime_type=mime_type),
+                    (
+                        "L'utilisateur parle en langue fongbe (langue parlée au Bénin, Afrique de l'Ouest). \n"
+                        "Ta tâche :\n"
+                        "1. Comprends ce que l'utilisateur dit en fongbe.\n"
+                        "2. Traduis sa demande en français clair et naturel.\n"
+                        "Exemples :\n"
+                        "  'Mi jɛ wà dokun mitɔn' → 'Je veux faire mon extrait de naissance'\n"
+                        "  'Ðò nɛ̌ e è nɔ wà dokun ɔ gbɔn é ?' → 'Comment faire mon extrait de naissance ?'\n"
+                        "  'Mi jɛ wà passpot mitɔn' → 'Je veux faire mon passeport'\n"
+                        "Réponds UNIQUEMENT avec la traduction française, sans explication ni préfixe.\n"
+                        "Si l'audio est inaudible ou incompréhensible, réponds exactement : AUDIO_INAUDIBLE"
+                    ),
+                ],
+            )
+            french_text = response.text.strip() if response.text else ""
+
+            if not french_text or "AUDIO_INAUDIBLE" in french_text:
+                await self._send({
+                    "type": "message",
+                    "role": "assistant",
+                    "text": "Je n'ai pas pu comprendre l'audio. Veuillez réessayer ou taper votre demande en français.",
+                })
+                await self.send_status("idle")
+                return
+
+            # Afficher le message traduit dans la conversation comme message utilisateur
+            await self._send({"type": "message", "role": "user", "text": french_text})
+
+            # Traiter comme un message utilisateur normal
+            await self.process_message(french_text)
+
+        except Exception as e:
+            print(f"Erreur transcription audio fongbe: {e}")
+            await self._send({
+                "type": "message",
+                "role": "assistant",
+                "text": "Erreur lors de la transcription audio. Veuillez réessayer ou taper votre demande.",
+            })
+            await self.send_status("idle")
+
     async def process_message(self, user_text: str):
         self.history.append({"role": "user", "text": user_text})
 

@@ -50,10 +50,9 @@ export function useAssistant() {
   const [currentConfirm, setCurrentConfirm] = useState<ConfirmPrompt | null>(null)
 
   const wsRef = useRef<WebSocket | null>(null)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<BlobPart[]>([])
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const transcriptRef = useRef<string>("")
   // callback ref used by startRecording to avoid stale closure
   const sendMessageRef = useRef<(text: string) => void>(() => {})
   // field callback ref
@@ -190,84 +189,86 @@ export function useAssistant() {
     setStatus("thinking")
   }, [])
 
-  // ── Audio ─────────────────────────────────────────────────────────────────
-  // Uses continuous=true so the browser never cuts off mid-sentence.
-  // A 2.5 s silence timer auto-stops and sends whatever was transcribed.
-
-  const stopRecordingInternal = useCallback(() => {
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current)
-      silenceTimerRef.current = null
-    }
-    recognitionRef.current?.stop()
-    setIsRecording(false)
-  }, [])
+  // ── Audio (MediaRecorder) ────────────────────────────────────────────────
+  // Capture l'audio brut et l'envoie au backend pour transcription fongbe→français via Gemini.
+  // L'utilisateur appuie sur le micro pour démarrer et appuie à nouveau pour arrêter.
+  // Un timer de sécurité de 60 s arrête automatiquement si l'utilisateur oublie.
 
   const startRecording = useCallback(() => {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SR) {
-      console.warn("SpeechRecognition non supporté par ce navigateur")
+    if (!navigator.mediaDevices?.getUserMedia) {
+      console.warn("getUserMedia non supporté par ce navigateur")
       return
     }
 
-    // Reset transcript buffer
-    transcriptRef.current = ""
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((stream) => {
+        audioChunksRef.current = []
 
-    const recognition = new SR()
-    recognition.lang = "fr-FR"
-    recognition.continuous = true       // ← ne s'arrête pas entre les pauses
-    recognition.interimResults = true   // montre les résultats en temps réel
+        const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+          ? "audio/webm;codecs=opus"
+          : MediaRecorder.isTypeSupported("audio/webm")
+          ? "audio/webm"
+          : "audio/ogg;codecs=opus"
 
-    const resetSilenceTimer = () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-      silenceTimerRef.current = setTimeout(() => {
-        // 2.5 s de silence → on envoie
-        recognition.stop()
-      }, 2500)
-    }
+        const recorder = new MediaRecorder(stream, { mimeType })
+        mediaRecorderRef.current = recorder
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    recognition.onresult = (event: any) => {
-      let final = ""
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          final += event.results[i][0].transcript
+        recorder.ondataavailable = (e) => {
+          if (e.data.size > 0) audioChunksRef.current.push(e.data)
         }
-      }
-      if (final) {
-        transcriptRef.current += (transcriptRef.current ? " " : "") + final
-        resetSilenceTimer()
-      }
-    }
 
-    recognition.onend = () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-      silenceTimerRef.current = null
-      setIsRecording(false)
+        recorder.onstop = () => {
+          stream.getTracks().forEach((t) => t.stop())
+          setIsRecording(false)
 
-      const text = transcriptRef.current.trim()
-      transcriptRef.current = ""
-      if (!text) return
+          const blob = new Blob(audioChunksRef.current, { type: mimeType })
+          audioChunksRef.current = []
 
-      sendMessageRef.current(text)
-    }
+          const reader = new FileReader()
+          reader.onload = (ev) => {
+            const result = ev.target?.result as string
+            const b64 = result.split(",")[1]
+            const ws = wsRef.current
+            if (ws && ws.readyState === WebSocket.OPEN && b64) {
+              ws.send(JSON.stringify({ type: "audio_message", data: b64, mime_type: mimeType }))
+              setIsThinking(true)
+              setStatus("thinking")
+            }
+          }
+          reader.readAsDataURL(blob)
+        }
 
-    recognition.onerror = () => {
-      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
-      setIsRecording(false)
-    }
+        recorder.onerror = () => {
+          stream.getTracks().forEach((t) => t.stop())
+          setIsRecording(false)
+        }
 
-    recognition.start()
-    recognitionRef.current = recognition
-    setIsRecording(true)
-    resetSilenceTimer()
+        recorder.start()
+        setIsRecording(true)
+
+        // Timer de sécurité : 60 s max
+        if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current)
+        silenceTimerRef.current = setTimeout(() => {
+          if (mediaRecorderRef.current?.state === "recording") {
+            mediaRecorderRef.current.stop()
+          }
+        }, 60000)
+      })
+      .catch(() => {
+        console.warn("Microphone non accessible")
+      })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const stopRecording = useCallback(() => {
-    stopRecordingInternal()
-  }, [stopRecordingInternal])
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+    if (mediaRecorderRef.current?.state === "recording") {
+      mediaRecorderRef.current.stop()
+    }
+  }, [])
 
   const uploadDocument = useCallback((file: File) => {
     const ws = wsRef.current

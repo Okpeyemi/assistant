@@ -41,6 +41,11 @@ async def websocket_endpoint(websocket: WebSocket):
                 value = data.get("value", "").strip()
                 if value:
                     await agent.receive_field_answer(field_id, value)
+            elif data.get("type") == "audio_message":
+                audio_data = data.get("data", "")
+                mime_type = data.get("mime_type", "audio/webm")
+                if audio_data:
+                    await agent.process_audio_message(audio_data, mime_type)
             elif data.get("type") == "document":
                 doc_data = data.get("data", "")
                 mime_type = data.get("mime_type", "image/jpeg")
