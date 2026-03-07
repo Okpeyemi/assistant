@@ -40,6 +40,7 @@ Exemples : champ "Nom" → ask_user | champ "Date de naissance" → ask_user | c
 
 ## PARAMÈTRES
 
+- go_back       → {} — retour à la page précédente sans rechargement (utiliser quand il faut quitter une page de connexion/inscription)
 - navigate      → {"url": "https://..."}
   ⚡ RÈGLE CRITIQUE (Angular SPA) : Quand tu veux accéder à une page dont tu connais l'URL (visible dans "Liens"),
   utilise TOUJOURS `navigate` plutôt que `click`. Exemple :
@@ -98,13 +99,14 @@ Sur service-public.bj, il est STRICTEMENT INTERDIT de :
 
 Toutes les démarches sur service-public.bj sont accessibles SANS compte, en mode anonyme.
 Si le site propose une connexion, IGNORE-LA et trouve le chemin sans authentification.
-Si une page de connexion/inscription s'affiche, navigue directement vers l'URL de la démarche demandée.
-Si tu te retrouves sur une page de login ou d'inscription : c'est une erreur de navigation — fais `navigate` vers la bonne URL.
+Si une page de connexion/inscription s'affiche, fais IMMÉDIATEMENT `go_back` pour revenir à la page précédente sans rechargement.
+Ne navigue JAMAIS vers une URL d'authentification (contenant /login, /connexion, /inscription, /register, /auth, /compte, /password).
 
 ✅ CORRECT   → Naviguer directement vers l'URL du service et remplir le formulaire sans compte
+✅ CORRECT   → Si tu te retrouves sur une page de connexion/inscription : {"action":"go_back","params":{},"reasoning":"Page d'inscription détectée, retour arrière","message":""}
 ❌ INTERDIT  → Cliquer sur "Créer un compte" ou remplir un formulaire d'inscription
 ❌ INTERDIT  → Demander à l'utilisateur un mot de passe, un code de vérification ou une question de sécurité
-
+❌ INTERDIT  → Utiliser navigate vers une URL contenant /login, /connexion, /inscription, /register
 ## RAPPEL FINAL
 
 - `message` = "" pour navigate, click, fill, fill_multiple, search, submit, wait, scroll
@@ -552,7 +554,24 @@ class NavigationAgent:
         # Stuck detection: track last N (action, params_key) pairs
         recent_actions: list[str] = []
 
+        # Patterns d'URL d'authentification/inscription à éviter
+        AUTH_URL_PATTERNS = ("/login", "/connexion", "/inscription", "/register",
+                             "/auth", "/signup", "/sign-up", "/create-account",
+                             "/creer-un-compte", "/mot-de-passe", "/password")
+
         for _ in range(max_iterations):
+            # ── Garde : retour arrière automatique si on est sur une page d'auth ──
+            current_url = await self.browser.current_url()
+            if any(p in current_url.lower() for p in AUTH_URL_PATTERNS):
+                print(f"[Guard] Page d'auth détectée ({current_url}), go_back automatique")
+                await self._send({"type": "log", "action": "navigate",
+                                   "text": "Page d'inscription détectée — retour arrière automatique"})
+                went_back = await self.browser.go_back()
+                if not went_back:
+                    # Si go_back échoue, naviguer vers la page d'accueil du service
+                    await self.browser.navigate("https://service-public.bj")
+                continue
+
             page_info = await self.browser.get_page_info()
             action_data = await self._call_gemini(page_info, last_error=last_error)
 
@@ -759,8 +778,13 @@ class NavigationAgent:
         message = action_data.get("message", "").strip()
         ok = True
 
+        AUTH_URL_PATTERNS = ("/login", "/connexion", "/inscription", "/register",
+                             "/auth", "/signup", "/sign-up", "/create-account",
+                             "/creer-un-compte", "/mot-de-passe", "/password")
+
         status_map = {
             "navigate":     "navigation",
+            "go_back":      "navigation",
             "click":        "clicking",
             "fill":         "filling",
             "fill_multiple":"filling",
@@ -778,10 +802,21 @@ class NavigationAgent:
         if reasoning:
             await self._send({"type": "log", "action": action, "text": reasoning})
 
-        if action == "navigate":
-            ok = await self.browser.navigate(params.get("url", ""))
-            if ok:
-                self._filled_fields.clear()  # Reset on page change
+        if action == "go_back":
+            ok = await self.browser.go_back()
+
+        elif action == "navigate":
+            url = params.get("url", "")
+            # Blocage dur : refuser toute navigation vers une page d'auth/inscription
+            if any(p in url.lower() for p in AUTH_URL_PATTERNS):
+                print(f"[Guard] navigate bloqué vers URL d'auth : {url}")
+                await self._send({"type": "log", "action": "navigate",
+                                   "text": f"Navigation bloquée (page d'auth) → go_back"})
+                ok = await self.browser.go_back()
+            else:
+                ok = await self.browser.navigate(url)
+                if ok:
+                    self._filled_fields.clear()  # Reset on page change
 
         elif action == "click":
             selector = params.get("selector")

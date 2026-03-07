@@ -495,6 +495,15 @@ class BrowserManager:
 
         return False
 
+    async def go_back(self) -> bool:
+        try:
+            await self.page.go_back(wait_until="domcontentloaded", timeout=10000)
+            await asyncio.sleep(1.0)
+            return True
+        except Exception as e:
+            print(f"go_back error: {e}")
+            return False
+
     async def current_url(self) -> str:
         try:
             return self.page.url
